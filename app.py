@@ -1,102 +1,152 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import requests
+import yfinance as yf
 import matplotlib.pyplot as plt
-
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 
-# ---------------- CONFIG ----------------
-st.set_page_config(page_title="Crypto Price Forecast", layout="centered")
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(
+    page_title="Crypto Price Forecast & Decision System",
+    page_icon="📊",
+    layout="wide"
+)
 
-st.title("📈 Crypto Price Forecasting using LSTM")
-st.write("Forecast next 30 days of crypto prices")
+# ---------------- SIDEBAR ----------------
+st.sidebar.title("📌 Navigation")
+page = st.sidebar.radio(
+    "Go to",
+    ["🏠 Home", "📈 Forecast", "🤖 Trading Decision", "ℹ️ About"]
+)
 
-# ---------------- USER INPUT ----------------
-crypto = st.selectbox(
+crypto = st.sidebar.selectbox(
     "Select Cryptocurrency",
-    ["bitcoin", "ethereum", "binancecoin", "ripple", "cardano"]
+    ["BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD", "SOL-USD"]
 )
 
-days_to_forecast = st.slider("Forecast days", 7, 60, 30)
-
-# ---------------- FETCH DATA ----------------
+# ---------------- DATA FUNCTION ----------------
 @st.cache_data
-def fetch_crypto_data(coin, days=180):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart"
-    params = {"vs_currency": "usd", "days": days}
-    response = requests.get(url, params=params)
-    data = response.json()
-    prices = [price[1] for price in data["prices"]]
-    return pd.DataFrame(prices, columns=["Close"])
+def load_data(symbol):
+    data = yf.download(symbol, period="6mo", interval="1d")
+    data = data[['Close']].dropna()
+    return data
 
-df = fetch_crypto_data(crypto)
+data = load_data(crypto)
 
-st.subheader("📊 Historical Price Data")
-st.line_chart(df)
+# ---------------- HOME PAGE ----------------
+if page == "🏠 Home":
+    st.title("🚀 Crypto Price Forecast & Decision Support System")
 
-# ---------------- PREPROCESS ----------------
-scaler = MinMaxScaler()
-scaled_data = scaler.fit_transform(df)
+    col1, col2, col3 = st.columns(3)
 
-LOOKBACK = 14
-X, y = [], []
+    col1.metric("📅 Data Period", "Last 6 Months")
+    col2.metric("💱 Selected Crypto", crypto)
+    col3.metric("📈 Latest Price ($)", f"{data['Close'].iloc[-1]:.2f}")
 
-for i in range(LOOKBACK, len(scaled_data)):
-    X.append(scaled_data[i - LOOKBACK:i, 0])
-    y.append(scaled_data[i, 0])
+    st.subheader("📊 Closing Price Trend")
+    st.line_chart(data['Close'])
 
-X, y = np.array(X), np.array(y)
-X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+    st.success("This system forecasts crypto prices and provides BUY / SELL decisions using Deep Learning (LSTM).")
 
-# ---------------- MODEL ----------------
-model = Sequential([
-    LSTM(50, return_sequences=True, input_shape=(LOOKBACK, 1)),
-    LSTM(50),
-    Dense(1)
-])
+# ---------------- FORECAST PAGE ----------------
+elif page == "📈 Forecast":
+    st.title("📈 Crypto Price Forecast")
 
-model.compile(optimizer="adam", loss="mean_squared_error")
+    scaler = MinMaxScaler()
+    scaled_data = scaler.fit_transform(data)
 
-with st.spinner("🔄 Training LSTM model..."):
-    model.fit(X, y, epochs=5, batch_size=16, verbose=0)
+    lookback = 14
+    X, y = [], []
 
-st.success("✅ Model trained successfully!")
+    for i in range(lookback, len(scaled_data)):
+        X.append(scaled_data[i-lookback:i, 0])
+        y.append(scaled_data[i, 0])
 
-# ---------------- FORECAST ----------------
-last_sequence = scaled_data[-LOOKBACK:]
-future_predictions = []
+    X, y = np.array(X), np.array(y)
+    X = X.reshape((X.shape[0], X.shape[1], 1))
 
-for _ in range(days_to_forecast):
-    pred = model.predict(last_sequence.reshape(1, LOOKBACK, 1), verbose=0)
-    future_predictions.append(pred[0, 0])
-    last_sequence = np.append(last_sequence[1:], pred, axis=0)
+    model = Sequential([
+        LSTM(32, return_sequences=False, input_shape=(lookback, 1)),
+        Dense(1)
+    ])
+    model.compile(optimizer="adam", loss="mse")
 
-future_predictions = scaler.inverse_transform(
-    np.array(future_predictions).reshape(-1, 1)
-)
+    with st.spinner("Training LSTM model..."):
+        model.fit(X, y, epochs=2, batch_size=32, verbose=0)
 
-# ---------------- PLOT ----------------
-st.subheader("🔮 Price Forecast")
+    last_seq = scaled_data[-lookback:]
+    future = []
 
-plt.figure(figsize=(10, 4))
-plt.plot(df.values, label="Historical Price")
-plt.plot(
-    range(len(df), len(df) + days_to_forecast),
-    future_predictions,
-    label="Forecast",
-    linestyle="dashed"
-)
-plt.legend()
-st.pyplot(plt)
+    for _ in range(7):
+        pred = model.predict(last_seq.reshape(1, lookback, 1), verbose=0)
+        future.append(pred[0, 0])
+        last_seq = np.append(last_seq[1:], pred, axis=0)
 
-# ---------------- TABLE ----------------
-forecast_df = pd.DataFrame(
-    future_predictions,
-    columns=["Predicted Price (USD)"]
-)
+    future_prices = scaler.inverse_transform(np.array(future).reshape(-1, 1))
 
-st.subheader("📅 Forecasted Prices")
-st.dataframe(forecast_df)
+    forecast_df = pd.DataFrame({
+        "Day": [f"Day {i+1}" for i in range(7)],
+        "Predicted Price ($)": future_prices.flatten()
+    })
+
+    st.subheader("🔮 7-Day Price Forecast")
+    st.dataframe(forecast_df, use_container_width=True)
+
+    st.line_chart(forecast_df["Predicted Price ($)"])
+
+# ---------------- DECISION PAGE ----------------
+elif page == "🤖 Trading Decision":
+    st.title("🤖 AI-Based Trading Decision")
+
+    last_price = data['Close'].iloc[-1]
+    avg_future = np.mean(data['Close'].tail(5))
+
+    if avg_future > last_price * 1.02:
+        decision = "BUY 🟢"
+        color = "green"
+        reason = "Expected upward trend"
+    elif avg_future < last_price * 0.98:
+        decision = "SELL 🔴"
+        color = "red"
+        reason = "Expected downward trend"
+    else:
+        decision = "HOLD 🟡"
+        color = "orange"
+        reason = "Market is stable"
+
+    st.markdown(f"## 🧠 Decision: :{color}[{decision}]")
+    st.write(f"**Reason:** {reason}")
+    st.write(f"**Current Price:** ${last_price:.2f}")
+    st.write(f"**Recent Average:** ${avg_future:.2f}")
+
+    st.warning("⚠️ This is an educational prediction system, not financial advice.")
+
+# ---------------- ABOUT PAGE ----------------
+elif page == "ℹ️ About":
+    st.title("ℹ️ About This Project")
+
+    st.markdown("""
+    ### 📌 Project Title
+    **Crypto Price Forecast & Trading Decision System**
+
+    ### 🧠 Technologies Used
+    - Python
+    - Streamlit
+    - LSTM (Deep Learning)
+    - Yahoo Finance API
+
+    ### 🎯 Objective
+    To forecast cryptocurrency prices and assist users with BUY / SELL / HOLD decisions.
+
+    ### 👩‍💻 Developed By
+    **Sakthi Sowmiya**
+
+    ### 🏫 Use Case
+    - Final Year Project
+    - Internship Project
+    - Portfolio Demonstration
+    """)
+
+    st.success("Thank you for using this application!")
