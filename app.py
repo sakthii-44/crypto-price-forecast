@@ -45,6 +45,7 @@ if page == "🏠 Home":
     col2.metric("💱 Selected Crypto", crypto)
     col3.metric("📈 Latest Price ($)", f"{data['Close'].iloc[-1]:.2f}")
 
+
     st.subheader("📊 Closing Price Trend")
     st.line_chart(data['Close'])
 
@@ -150,3 +151,4 @@ elif page == "ℹ️ About":
     """)
 
     st.success("Thank you for using this application!")
+
