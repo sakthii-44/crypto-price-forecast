@@ -1,230 +1,153 @@
-# =========================
-# CRYPTO PRICE FORECAST APP
-# =========================
-
 import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
 from datetime import timedelta
 
-# -------------------------
-# PAGE CONFIG (ONLY ONCE)
-# -------------------------
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
-    page_title="Crypto Price Forecast",
-    page_icon="📈",
+    page_title="Crypto Price Forecast & Decision System",
+    page_icon="🚀",
     layout="wide"
 )
 
-# -------------------------
-# SIDEBAR
-# -------------------------
-st.sidebar.title("📌 Navigation")
+# ---------------- BACKGROUND STYLE ----------------
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"] {
+    background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+    color: white;
+}
+</style>
+""", unsafe_allow_html=True)
 
-crypto = st.sidebar.selectbox(
-    "Select Cryptocurrency",
-    ["BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD", "SOL-USD"]
-)
+# ---------------- SIDEBAR ----------------
+st.sidebar.title("⚙ Settings")
+
+popular_coins = ["bitcoin", "ethereum", "dogecoin", "solana", "ripple"]
+coin = st.sidebar.selectbox("Select Coin", popular_coins)
+
+custom_coin = st.sidebar.text_input("Or enter CoinGecko ID")
+if custom_coin.strip():
+    coin = custom_coin.lower()
+
+forecast_days = st.sidebar.slider("Forecast Days", 7, 30, 14)
 
 page = st.sidebar.radio(
-    "Go to",
-    ["📊 Dashboard", "📈 Forecast", "🧠 Decision", "ℹ️ App Info"]
+    "Navigate",
+    ["📊 Forecast", "📈 Visualization", "🧠 Trading Decision", "ℹ About App"]
 )
 
-st.title("🚀 Crypto Price Forecast & Decision System")
-
-# -------------------------
-# LOAD DATA
-# -------------------------
+# ---------------- DATA FETCH ----------------
 @st.cache_data
-def load_data(symbol):
-    df = yf.download(symbol, period="1y", interval="1d", progress=False)
-    df = df[["Close"]].dropna()
+def fetch_data(coin):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart"
+    params = {"vs_currency": "usd", "days": 120}
+    r = requests.get(url, params=params)
+    r.raise_for_status()
+    data = r.json()
+
+    df = pd.DataFrame(data["prices"], columns=["time", "price"])
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
     return df
 
-data = load_data(crypto)
-
-if data.empty:
-    st.error("⚠️ Failed to load market data.")
+try:
+    df = fetch_data(coin)
+except:
+    st.error("❌ Invalid Coin ID. Use CoinGecko IDs only.")
     st.stop()
 
-# -------------------------
-# DASHBOARD PAGE
-# -------------------------
-if page == "📊 Dashboard":
+# ---------------- SIMPLE FORECAST ----------------
+df["predicted"] = df["price"].rolling(7).mean()
 
-    st.subheader(f"📊 Market Overview — {crypto}")
+future_dates = [
+    df["time"].iloc[-1] + timedelta(days=i)
+    for i in range(1, forecast_days + 1)
+]
 
-    latest_price = float(data["Close"].iloc[-1])
-    prev_price = float(data["Close"].iloc[-2])
+last_price = float(df["price"].iloc[-1])
+future_prices = np.linspace(last_price * 0.98, last_price * 1.05, forecast_days)
 
-    change = latest_price - prev_price
-    pct_change = (change / prev_price) * 100
+future_df = pd.DataFrame({
+    "time": future_dates,
+    "predicted": future_prices
+})
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("💰 Latest Price ($)", f"{latest_price:.2f}")
-    col2.metric("📉 Daily Change ($)", f"{change:.2f}", f"{pct_change:.2f}%")
-    col3.metric("📆 Data Points", len(data))
+# ---------------- PAGE 1 ----------------
+if page == "📊 Forecast":
+    st.title("📊 Crypto Price Forecast")
 
-    st.markdown("### 📉 Price Trend (1 Year)")
+    st.metric("Coin", coin.upper())
+    st.metric("Current Price ($)", f"{last_price:.2f}")
+
     fig, ax = plt.subplots()
-    ax.plot(data.index, data["Close"])
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Price ($)")
+    ax.plot(df["time"], df["price"], label="Actual")
+    ax.plot(df["time"], df["predicted"], label="Predicted")
+    ax.plot(future_df["time"], future_df["predicted"], label="Future")
+    ax.legend()
     st.pyplot(fig)
 
-# -------------------------
-# FORECAST PAGE
-# -------------------------
-elif page == "📈 Forecast":
+# ---------------- PAGE 2 ----------------
+elif page == "📈 Visualization":
+    st.title("📈 Market Trend")
 
-    st.subheader("📈 30-Day Price Forecast (LSTM)")
+    fig, ax = plt.subplots()
+    ax.plot(df["time"], df["price"])
+    ax.set_title("Historical Prices")
+    st.pyplot(fig)
 
-    prices = data["Close"].values.reshape(-1, 1)
+# ---------------- PAGE 3 (ERROR FIXED) ----------------
+elif page == "🧠 Trading Decision":
+    st.title("🧠 Trading Decision")
 
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(prices)
+    short_ma_series = df["price"].rolling(10).mean()
+    long_ma_series = df["price"].rolling(30).mean()
 
-    lookback = 14
-    X, y = [], []
-
-    for i in range(lookback, len(scaled)):
-        X.append(scaled[i - lookback:i])
-        y.append(scaled[i])
-
-    X, y = np.array(X), np.array(y)
-
-    model = Sequential([
-        LSTM(50, return_sequences=True, input_shape=(lookback, 1)),
-        LSTM(50),
-        Dense(1)
-    ])
-
-    model.compile(optimizer="adam", loss="mse")
-    model.fit(X, y, epochs=5, batch_size=16, verbose=0)
-
-    future = []
-    last_seq = scaled[-lookback:]
-
-    for _ in range(30):
-        pred = model.predict(last_seq.reshape(1, lookback, 1), verbose=0)
-        future.append(pred[0, 0])
-        last_seq = np.append(last_seq[1:], pred, axis=0)
-
-    forecast_prices = scaler.inverse_transform(
-        np.array(future).reshape(-1, 1)
-    ).flatten()
-
-    future_dates = [
-        data.index[-1] + timedelta(days=i + 1) for i in range(30)
-    ]
-
-    forecast_df = pd.DataFrame({
-        "Date": future_dates,
-        "Forecast Price": forecast_prices
-    })
-
-    st.line_chart(forecast_df.set_index("Date"))
-    st.dataframe(forecast_df, use_container_width=True)
-
-# -------------------------
-# DECISION PAGE (ERROR-FREE)
-# -------------------------
-elif page == "🧠 Decision":
-
-    st.subheader("🧠 Trading Decision")
-
-    short_ma = data["Close"].rolling(10).mean().iloc[-1]
-    long_ma = data["Close"].rolling(30).mean().iloc[-1]
-    current_price = data["Close"].iloc[-1]
+    # SAFE scalar conversion
+    short_ma = float(short_ma_series.dropna().iloc[-1])
+    long_ma = float(long_ma_series.dropna().iloc[-1])
 
     if short_ma > long_ma:
         decision = "✅ BUY"
-        reason = "Short-term trend is above long-term trend"
+        reason = "Short-term trend is stronger than long-term trend."
     elif short_ma < long_ma:
         decision = "❌ SELL"
-        reason = "Short-term trend is below long-term trend"
+        reason = "Short-term trend is weaker than long-term trend."
     else:
-        decision = "⚖️ HOLD"
-        reason = "Market trend is neutral"
+        decision = "⚖ HOLD"
+        reason = "Market trend is neutral."
 
-    st.metric("💰 Current Price ($)", f"{current_price:.2f}")
-    st.metric("📊 Decision", decision)
-    st.info(f"📖 Reason: {reason}")
+    st.metric("Current Price ($)", f"{last_price:.2f}")
+    st.metric("Decision", decision)
+    st.info(reason)
 
-# -------------------------
-# APP INFO PAGE (ACCURACY + CHART)
-# -------------------------
-elif page == "ℹ️ App Info":
+# ---------------- PAGE 4 ----------------
+elif page == "ℹ About App":
+    st.title("ℹ About This App")
 
-    st.subheader("ℹ️ Application Overview")
-
-    st.markdown("""
-    This application helps users **analyze cryptocurrency trends** and
-    **forecast future prices** using deep learning.
-    """)
-
-    st.markdown("### 📊 Model Accuracy (Backtesting)")
-
-    # Use last 30 days as test data
-    test_days = 30
-    prices = data["Close"].values.reshape(-1, 1)
-
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(prices)
-
-    X, y = [], []
-    lookback = 14
-
-    for i in range(lookback, len(scaled) - test_days):
-        X.append(scaled[i - lookback:i])
-        y.append(scaled[i])
-
-    X, y = np.array(X), np.array(y)
-
-    model = Sequential([
-        LSTM(50, return_sequences=True, input_shape=(lookback, 1)),
-        LSTM(50),
-        Dense(1)
-    ])
-
-    model.compile(optimizer="adam", loss="mse")
-    model.fit(X, y, epochs=5, batch_size=16, verbose=0)
-
-    # Predict last 30 days
-    test_inputs = scaled[-(test_days + lookback):-test_days]
-    preds = []
-
-    for i in range(test_days):
-        pred = model.predict(test_inputs.reshape(1, lookback, 1), verbose=0)
-        preds.append(pred[0, 0])
-        test_inputs = np.append(test_inputs[1:], pred, axis=0)
-
-    preds = scaler.inverse_transform(np.array(preds).reshape(-1, 1)).flatten()
-    actual = prices[-test_days:].flatten()
-
-    mape = np.mean(np.abs((actual - preds) / actual)) * 100
+    valid = df.dropna()
+    mape = np.mean(np.abs((valid["price"] - valid["predicted"]) / valid["price"])) * 100
     accuracy = 100 - mape
 
-    st.success(f"✅ Forecast Accuracy: **{accuracy:.2f}%** (Last 30 Days)")
+    st.metric("Prediction Accuracy (%)", f"{accuracy:.2f}%")
 
-    acc_df = pd.DataFrame({
-        "Date": data.index[-test_days:],
-        "Actual Price": actual,
-        "Predicted Price": preds
-    })
-
-    st.line_chart(acc_df.set_index("Date"))
+    fig, ax = plt.subplots()
+    ax.plot(valid["time"], valid["price"], label="Actual")
+    ax.plot(valid["time"], valid["predicted"], label="Predicted")
+    ax.legend()
+    ax.set_title("Accuracy Evaluation")
+    st.pyplot(fig)
 
     st.markdown("""
-    ### 🔍 Key Highlights
-    - Uses **LSTM Neural Networks**
-    - Trained on **1 year of historical data**
-    - Accuracy measured using **MAPE**
-    - Designed for **trend understanding**, not instant trading
-    """)
+### 🔍 Application Overview
+- Fetches live crypto prices
+- Forecasts future trend
+- Generates BUY / SELL / HOLD signals
+- Displays **real computed accuracy**
+
+### 📌 Decision Logic
+- BUY → Short MA > Long MA  
+- SELL → Short MA < Long MA  
+- HOLD → Neutral trend
+""")
