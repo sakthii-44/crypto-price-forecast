@@ -1,154 +1,192 @@
+# =========================
+# CRYPTO PRICE FORECAST APP
+# =========================
+
 import streamlit as st
-import numpy as np
-import pandas as pd
 import yfinance as yf
+import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+from datetime import timedelta
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 
-# ---------------- PAGE CONFIG ----------------
+# -------------------------
+# PAGE CONFIG
+# -------------------------
 st.set_page_config(
-    page_title="Crypto Price Forecast & Decision System",
-    page_icon="📊",
+    page_title="Crypto Price Forecast",
+    page_icon="📈",
     layout="wide"
 )
 
-# ---------------- SIDEBAR ----------------
-st.sidebar.title("📌 Navigation")
-page = st.sidebar.radio(
-    "Go to",
-    ["🏠 Home", "📈 Forecast", "🤖 Trading Decision", "ℹ️ About"]
-)
+st.title("🚀 Crypto Price Forecast & Decision System")
+
+# -------------------------
+# SIDEBAR
+# -------------------------
+st.sidebar.header("⚙️ Settings")
 
 crypto = st.sidebar.selectbox(
     "Select Cryptocurrency",
     ["BTC-USD", "ETH-USD", "BNB-USD", "XRP-USD", "SOL-USD"]
 )
 
-# ---------------- DATA FUNCTION ----------------
+page = st.sidebar.radio(
+    "Navigate",
+    ["📊 Dashboard", "📈 Forecast", "🧠 Decision", "ℹ️ About"]
+)
+
+# -------------------------
+# DATA LOADING
+# -------------------------
 @st.cache_data
 def load_data(symbol):
-    data = yf.download(symbol, period="6mo", interval="1d")
-    data = data[['Close']].dropna()
+    data = yf.download(symbol, period="1y", interval="1d")
     return data
 
 data = load_data(crypto)
 
-# ---------------- HOME PAGE ----------------
-if page == "🏠 Home":
-    st.title("🚀 Crypto Price Forecast & Decision Support System")
+if data is None or data.empty or "Close" not in data.columns:
+    st.error("⚠️ Unable to fetch data. Please try again later.")
+    st.stop()
+
+# -------------------------
+# DASHBOARD PAGE
+# -------------------------
+if page == "📊 Dashboard":
+
+    st.subheader(f"📊 Market Overview — {crypto}")
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("📅 Data Period", "Last 6 Months")
-    col2.metric("💱 Selected Crypto", crypto)
-    col3.metric("📈 Latest Price ($)", f"{data['Close'].iloc[-1]:.2f}")
+    latest_price = data["Close"].iloc[-1]
+    prev_price = data["Close"].iloc[-2]
+    change = latest_price - prev_price
+    pct_change = (change / prev_price) * 100
 
+    col1.metric("💰 Latest Price ($)", f"{latest_price:.2f}")
+    col2.metric("📉 Daily Change ($)", f"{change:.2f}", f"{pct_change:.2f}%")
+    col3.metric("📆 Data Points", f"{len(data)} days")
 
-    st.subheader("📊 Closing Price Trend")
-    st.line_chart(data['Close'])
+    st.markdown("### 📉 Price Trend (Last 1 Year)")
+    fig, ax = plt.subplots()
+    ax.plot(data.index, data["Close"])
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Price ($)")
+    st.pyplot(fig)
 
-    st.success("This system forecasts crypto prices and provides BUY / SELL decisions using Deep Learning (LSTM).")
-
-# ---------------- FORECAST PAGE ----------------
+# -------------------------
+# FORECAST PAGE
+# -------------------------
 elif page == "📈 Forecast":
-    st.title("📈 Crypto Price Forecast")
+
+    st.subheader("📈 30-Day Price Forecast (LSTM)")
+
+    prices = data["Close"].values.reshape(-1, 1)
 
     scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(data)
+    scaled = scaler.fit_transform(prices)
 
-    lookback = 14
     X, y = [], []
+    lookback = 14
 
-    for i in range(lookback, len(scaled_data)):
-        X.append(scaled_data[i-lookback:i, 0])
-        y.append(scaled_data[i, 0])
+    for i in range(lookback, len(scaled)):
+        X.append(scaled[i - lookback:i])
+        y.append(scaled[i])
 
     X, y = np.array(X), np.array(y)
-    X = X.reshape((X.shape[0], X.shape[1], 1))
 
     model = Sequential([
-        LSTM(32, return_sequences=False, input_shape=(lookback, 1)),
+        LSTM(50, return_sequences=True, input_shape=(X.shape[1], 1)),
+        LSTM(50),
         Dense(1)
     ])
+
     model.compile(optimizer="adam", loss="mse")
+    model.fit(X, y, epochs=5, batch_size=16, verbose=0)
 
-    with st.spinner("Training LSTM model..."):
-        model.fit(X, y, epochs=2, batch_size=32, verbose=0)
-
-    last_seq = scaled_data[-lookback:]
     future = []
+    last_seq = scaled[-lookback:]
 
-    for _ in range(7):
+    for _ in range(30):
         pred = model.predict(last_seq.reshape(1, lookback, 1), verbose=0)
         future.append(pred[0, 0])
         last_seq = np.append(last_seq[1:], pred, axis=0)
 
-    future_prices = scaler.inverse_transform(np.array(future).reshape(-1, 1))
+    forecast_prices = scaler.inverse_transform(
+        np.array(future).reshape(-1, 1)
+    )
+
+    future_dates = [
+        data.index[-1] + timedelta(days=i+1) for i in range(30)
+    ]
 
     forecast_df = pd.DataFrame({
-        "Day": [f"Day {i+1}" for i in range(7)],
-        "Predicted Price ($)": future_prices.flatten()
+        "Date": future_dates,
+        "Forecast Price": forecast_prices.flatten()
     })
 
-    st.subheader("🔮 7-Day Price Forecast")
+    st.line_chart(forecast_df.set_index("Date"))
+
     st.dataframe(forecast_df, use_container_width=True)
 
-    st.line_chart(forecast_df["Predicted Price ($)"])
+# -------------------------
+# DECISION PAGE
+# -------------------------
+elif page == "🧠 Decision":
 
-# ---------------- DECISION PAGE ----------------
-elif page == "🤖 Trading Decision":
-    st.title("🤖 AI-Based Trading Decision")
+    st.subheader("🧠 Trading Decision System")
 
-    last_price = data['Close'].iloc[-1]
-    avg_future = np.mean(data['Close'].tail(5))
+    short_ma = data["Close"].rolling(10).mean().iloc[-1]
+    long_ma = data["Close"].rolling(30).mean().iloc[-1]
+    current_price = data["Close"].iloc[-1]
 
-    if avg_future > last_price * 1.02:
-        decision = "BUY 🟢"
-        color = "green"
-        reason = "Expected upward trend"
-    elif avg_future < last_price * 0.98:
-        decision = "SELL 🔴"
-        color = "red"
-        reason = "Expected downward trend"
+    if short_ma > long_ma:
+        decision = "✅ BUY"
+        reason = "Short-term trend is above long-term trend"
+    elif short_ma < long_ma:
+        decision = "❌ SELL"
+        reason = "Short-term trend is below long-term trend"
     else:
-        decision = "HOLD 🟡"
-        color = "orange"
-        reason = "Market is stable"
+        decision = "⚖️ HOLD"
+        reason = "Market trend is neutral"
 
-    st.markdown(f"## 🧠 Decision: :{color}[{decision}]")
-    st.write(f"**Reason:** {reason}")
-    st.write(f"**Current Price:** ${last_price:.2f}")
-    st.write(f"**Recent Average:** ${avg_future:.2f}")
+    st.metric("📌 Current Price ($)", f"{current_price:.2f}")
+    st.metric("📊 Decision", decision)
+    st.info(f"📖 Reason: {reason}")
 
-    st.warning("⚠️ This is an educational prediction system, not financial advice.")
-
-# ---------------- ABOUT PAGE ----------------
+# -------------------------
+# ABOUT PAGE
+# -------------------------
 elif page == "ℹ️ About":
-    st.title("ℹ️ About This Project")
+
+    st.subheader("ℹ️ About This Project")
 
     st.markdown("""
-    ### 📌 Project Title
-    **Crypto Price Forecast & Trading Decision System**
+    ### 🚀 Crypto Price Forecast & Decision System
 
-    ### 🧠 Technologies Used
+    **Features**
+    - Real-time crypto price tracking
+    - LSTM-based 30-day price forecasting
+    - Automated Buy / Sell / Hold decision
+    - Clean multi-page Streamlit UI
+
+    **Tech Stack**
     - Python
     - Streamlit
-    - LSTM (Deep Learning)
+    - TensorFlow (LSTM)
     - Yahoo Finance API
 
-    ### 🎯 Objective
-    To forecast cryptocurrency prices and assist users with BUY / SELL / HOLD decisions.
+    **Use Case**
+    - Educational & research purposes
+    - Helps understand crypto trends
 
-    ### 👩‍💻 Developed By
-    **Sakthi Sowmiya**
-
-    ### 🏫 Use Case
-    - Final Year Project
-    - Internship Project
-    - Portfolio Demonstration
+    ⚠️ *Not financial advice*
     """)
 
-    st.success("Thank you for using this application!")
+    st.success("Built by Sakthi Sowmiya 💙")
+
+
 
