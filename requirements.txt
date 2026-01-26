@@ -1,9 +1,1 @@
-streamlit
-numpy
-pandas
-scikit-learn
-tensorflow-cpu
-requests
-matplotlib
-
 
